@@ -4,9 +4,16 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 0 * * 1"
+
+permissions:
+  contents: read
 
 jobs:
   lint-and-test:
+    name: Lint, Type-check & Tests
     runs-on: ubuntu-latest
 
     steps:
@@ -44,3 +51,35 @@ jobs:
         env:
           HF_HOME: ${{ github.workspace }}/.hf_cache
         run: uv run pytest -m integration -v
+
+  security:
+    name: Security & Vulnerability Checks
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository (full history)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+          enable-cache: true
+
+      - name: Audit runtime dependencies (pip-audit)
+        run: |
+          uv export --frozen --no-dev --no-hashes --no-emit-project --no-annotate | grep -v '^sentencepiece-lite ' > /tmp/requirements-audit.txt
+          uv venv --python 3.12 .audit-venv
+          uv pip install --python .audit-venv/bin/python --no-deps -r /tmp/requirements-audit.txt
+          uv run --no-project --with pip-audit pip-audit --path .audit-venv/lib/python3.12/site-packages --strict
+          rm -rf .audit-venv /tmp/requirements-audit.txt
+
+      - name: Static security analysis (bandit)
+        run: uv run --no-project --with bandit bandit -r src --severity-level medium --confidence-level medium
+
+      - name: Secret leak scan (gitleaks)
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

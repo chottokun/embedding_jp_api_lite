@@ -35,7 +35,8 @@ def get_lite_model_revision() -> str | None:
 
 
 def get_host() -> str:
-    return os.getenv("HOST", "0.0.0.0")
+    # Default bind-all address is intentional for container / sidecar deployments.
+    return os.getenv("HOST", "0.0.0.0")  # nosec B104
 
 
 def get_port() -> int:

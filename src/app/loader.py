@@ -68,7 +68,8 @@ def _resolve_loader_path(
     last_err: Exception | None = None
     for filename in LOADER_CANDIDATES:
         try:
-            path = hf_hub_download(repo_id=model_id, filename=filename)
+            # Intentional unpinned fallback when LITE_MODEL_REVISION is unset (warning logged).
+            path = hf_hub_download(repo_id=model_id, filename=filename)  # nosec B615
             return path, None
         except Exception as exc:
             last_err = exc

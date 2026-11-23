@@ -178,7 +178,17 @@ HF_HUB_OFFLINE=1 uv run --no-sync pytest -m integration -v
 
 # Run all 5 verification gates
 uv run python scripts/verify_gates.py
+
+# Security checks (static analysis & dependency CVE scan)
+uv run --no-project --with bandit bandit -r src --severity-level medium --confidence-level medium
+uv export --frozen --no-dev --no-hashes --no-emit-project --no-annotate | grep -v '^sentencepiece-lite ' > /tmp/requirements-audit.txt
+uv venv --python 3.12 .audit-venv
+uv pip install --python .audit-venv/bin/python --no-deps -r /tmp/requirements-audit.txt
+uv run --no-project --with pip-audit pip-audit --path .audit-venv/lib/python3.12/site-packages --strict
+rm -rf .audit-venv /tmp/requirements-audit.txt
 ```
+
+GitHub Actions automatically runs `pip-audit`, `bandit`, and `gitleaks` in parallel on every push/PR and on a weekly schedule (`cron: "0 0 * * 1"`).
 
 ## License
 

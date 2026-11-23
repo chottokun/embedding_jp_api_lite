@@ -178,7 +178,17 @@ HF_HUB_OFFLINE=1 uv run --no-sync pytest -m integration -v
 
 # 全検証ゲート（5項目）の実行
 uv run python scripts/verify_gates.py
+
+# セキュリティ検査（静的解析 & 依存パッケージ CVE 検査）
+uv run --no-project --with bandit bandit -r src --severity-level medium --confidence-level medium
+uv export --frozen --no-dev --no-hashes --no-emit-project --no-annotate | grep -v '^sentencepiece-lite ' > /tmp/requirements-audit.txt
+uv venv --python 3.12 .audit-venv
+uv pip install --python .audit-venv/bin/python --no-deps -r /tmp/requirements-audit.txt
+uv run --no-project --with pip-audit pip-audit --path .audit-venv/lib/python3.12/site-packages --strict
+rm -rf .audit-venv /tmp/requirements-audit.txt
 ```
+
+GitHub Actions でも毎回の push / PR および週次スケジュール（`cron: "0 0 * * 1"`）で `pip-audit`・`bandit`・`gitleaks` を自動実行します。
 
 ## ライセンス
 
