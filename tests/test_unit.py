@@ -145,6 +145,87 @@ def test_prefix_overrides_from_lite_config():
     assert engine.resolve_prefix("sts", False, True) == "sts: "
 
 
+@pytest.mark.parametrize(
+    ("model_id", "family", "query_prefix", "passage_prefix"),
+    [
+        (
+            "Chottokun/multilingual-e5-base-lite",
+            "multilingual-e5",
+            "query: ",
+            "passage: ",
+        ),
+        (
+            "Chottokun/embeddinggemma-2-lite",
+            "embeddinggemma",
+            "task: search result | query: ",
+            "title: none | text: ",
+        ),
+    ],
+)
+def test_non_ruri_lite_models_prefixes_and_dim(
+    model_id: str,
+    family: str,
+    query_prefix: str,
+    passage_prefix: str,
+):
+    embedder = FakeEmbedder(
+        config={
+            "family": family,
+            "query_prefix": query_prefix,
+            "passage_prefix": passage_prefix,
+        },
+        embedding_dim=768,
+    )
+    engine = LiteEmbeddingEngine.from_embedder(model_id=model_id, embedder=embedder)
+    app.state.engine = engine
+    client = TestClient(app)
+    try:
+        resp_q = client.post(
+            "/v1/embeddings",
+            json={"input": "hello", "input_type": "query"},
+        )
+        assert resp_q.status_code == 200
+        assert resp_q.json()["model"] == model_id
+        assert len(resp_q.json()["data"][0]["embedding"]) == 768
+        assert embedder.recorded_texts[-1] == [f"{query_prefix}hello"]
+
+        for kind in ("document", "passage"):
+            resp_d = client.post(
+                "/v1/embeddings",
+                json={"input": "world", "input_type": kind},
+            )
+            assert resp_d.status_code == 200
+            assert embedder.recorded_texts[-1] == [f"{passage_prefix}world"]
+
+        for kind in ("classification", "clustering", "sts"):
+            resp_other = client.post(
+                "/v1/embeddings",
+                json={"input": "plain text", "input_type": kind},
+            )
+            assert resp_other.status_code == 200
+            assert embedder.recorded_texts[-1] == ["plain text"]
+
+        resp_auto_single = client.post(
+            "/v1/embeddings",
+            json={"input": "auto q", "apply_ruri_prefix": True},
+        )
+        assert resp_auto_single.status_code == 200
+        assert embedder.recorded_texts[-1] == [f"{query_prefix}auto q"]
+
+        resp_auto_list = client.post(
+            "/v1/embeddings",
+            json={"input": ["auto p1", "auto p2"], "apply_ruri_prefix": True},
+        )
+        assert resp_auto_list.status_code == 200
+        assert embedder.recorded_texts[-1] == [
+            f"{passage_prefix}auto p1",
+            f"{passage_prefix}auto p2",
+        ]
+    finally:
+        if hasattr(app.state, "engine"):
+            delattr(app.state, "engine")
+
+
 def test_validation_errors_422(fake_client):
     client, _, _ = fake_client
 

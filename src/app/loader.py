@@ -165,7 +165,18 @@ class LiteEmbeddingEngine:
             if key in ("document", "passage"):
                 return passage_prefix
             if key in ("classification", "clustering"):
-                return str(self.config.get("classification_prefix", "トピック: "))
+                if (
+                    "classification_prefix" in self.config
+                    and self.config["classification_prefix"] is not None
+                ):
+                    return str(self.config["classification_prefix"])
+                family = str(self.config.get("family", "")).lower()
+                is_ruri = (
+                    family.startswith("ruri")
+                    if family
+                    else ("ruri" in self.model_id.lower() or query_prefix == "検索クエリ: ")
+                )
+                return "トピック: " if is_ruri else ""
             if key == "sts":
                 return str(self.config.get("sts_prefix", ""))
             return ""

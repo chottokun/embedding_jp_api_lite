@@ -23,6 +23,21 @@ OpenAI-compatible, lightweight Japanese text embedding API server — runs on `s
 - **Offline startup support**: Downloads and caches the model and lite loader (`lite_embed.py` / `ruri_v3_lite.py`) from Hugging Face Hub on first boot; subsequent boots run fully offline with `HF_HUB_OFFLINE=1`
 - **Optional Bearer authentication**: Validates `Authorization: Bearer <API_KEY>` only when the `API_KEY` environment variable is set
 
+## Supported Models
+
+All 6 embedding models published by [`chottokun/embedding-sentencepiece-lite`](https://github.com/chottokun/embedding-sentencepiece-lite) run on the same Zero-Torch lightweight stack (1 process = 1 model, switchable via `LITE_MODEL`, no additional dependencies):
+
+| Model ID | Dim | Languages | Query / Passage Prefix | License | Notes |
+| --- | --- | --- | --- | --- | --- |
+| [`Chottokun/ruri-v3-30m-lite`](https://huggingface.co/Chottokun/ruri-v3-30m-lite) | 256 | Japanese | `"検索クエリ: "` / `"文章: "` | Apache-2.0 | **Default / lightest** |
+| [`Chottokun/ruri-v3-70m-lite`](https://huggingface.co/Chottokun/ruri-v3-70m-lite) | 384 | Japanese | `"検索クエリ: "` / `"文章: "` | Apache-2.0 | Balanced Japanese embedding |
+| [`Chottokun/ruri-v3-130m-lite`](https://huggingface.co/Chottokun/ruri-v3-130m-lite) | 512 | Japanese | `"検索クエリ: "` / `"文章: "` | Apache-2.0 | Medium Japanese embedding |
+| [`Chottokun/ruri-v3-310m-lite`](https://huggingface.co/Chottokun/ruri-v3-310m-lite) | 768 | Japanese | `"検索クエリ: "` / `"文章: "` | Apache-2.0 | High-accuracy Japanese embedding |
+| [`Chottokun/multilingual-e5-base-lite`](https://huggingface.co/Chottokun/multilingual-e5-base-lite) | 768 | Multilingual | `"query: "` / `"passage: "` | MIT | 100+ languages |
+| [`Chottokun/embeddinggemma-2-lite`](https://huggingface.co/Chottokun/embeddinggemma-2-lite) | 768 | Multilingual | `"task: search result \| query: "` / `"title: none \| text: "` | Apache-2.0 | Google EmbeddingGemma 2 text tower |
+
+> Note: `Chottokun/ruri-v3-reranker-310m-lite` (Cross-Encoder reranker) is out of scope for this embeddings-only server.
+
 ## Platform Requirements
 
 - Published wheels for `sentencepiece_lite` target `x86_64` (`manylinux_2_27_x86_64.manylinux_2_28_x86_64`) only, so local runs and the Docker image are **`linux/amd64`-only** (ARM64 hosts require `--platform=linux/amd64` emulation or a custom wheel).
@@ -75,7 +90,7 @@ Asymmetric retrieval models such as `ruri-v3` expect different prefixes for sear
 
 - `input_type="query"`: prepends `query_prefix` (`"検索クエリ: "` for `ruri-v3`)
 - `input_type="document"` or `"passage"`: prepends `passage_prefix` (`"文章: "` for `ruri-v3`)
-- `input_type="classification"` / `"clustering"`: prepends `classification_prefix` from `lite_config.json` (defaults to `"トピック: "`)
+- `input_type="classification"` / `"clustering"`: prepends `classification_prefix` from `lite_config.json` (defaults to `"トピック: "` for `ruri-v3` models, `""` for other model families)
 - `input_type="sts"`: prepends `sts_prefix` from `lite_config.json` (defaults to `""`)
 - `input_type` omitted and `apply_ruri_prefix=true`: prepends `query_prefix` for a single string input, or `passage_prefix` for a list input
 - `input_type` omitted (default): embeds `input` as-is (does not inject prefixes automatically)
@@ -137,7 +152,14 @@ With Docker, keep the populated cache volume mounted and pass `-e HF_HUB_OFFLINE
 Set `LITE_MODEL` to another lite model (a Hugging Face repo ID or local directory containing `model.onnx`, `.spm.fb`, `lite_config.json`, and `lite_embed.py`) and restart the server (one model per process):
 
 ```bash
+# Larger Japanese ruri-v3 model
 LITE_MODEL=Chottokun/ruri-v3-70m-lite uv run uvicorn app.main:app --host 0.0.0.0 --port 8080
+
+# Multilingual E5 base
+LITE_MODEL=Chottokun/multilingual-e5-base-lite uv run uvicorn app.main:app --host 0.0.0.0 --port 8080
+
+# EmbeddingGemma 2
+LITE_MODEL=Chottokun/embeddinggemma-2-lite uv run uvicorn app.main:app --host 0.0.0.0 --port 8080
 ```
 
 ## Development & Testing

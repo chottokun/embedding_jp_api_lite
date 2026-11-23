@@ -23,6 +23,21 @@ OpenAI 互換の軽量テキスト埋め込みサーバーです。`torch` / `tr
 - **オフライン起動対応**: 初回起動時に Hugging Face Hub からモデルと lite loader（`lite_embed.py` / `ruri_v3_lite.py`）を取得・キャッシュし、以降は `HF_HUB_OFFLINE=1` でオフライン起動可能
 - **任意 Bearer 認証**: `API_KEY` 環境変数が設定されている場合のみ `Authorization: Bearer <API_KEY>` を検証
 
+## 対応モデル一覧
+
+[`chottokun/embedding-sentencepiece-lite`](https://github.com/chottokun/embedding-sentencepiece-lite) に収録されている全 6 種の埋め込みモデルを、同じ Zero-Torch の軽量ランタイムのまま（1 プロセス 1 モデル・追加依存なし・`LITE_MODEL` 指定のみで切替可能）利用できます。
+
+| モデル ID | 次元数 | 対応言語 | クエリ / 文書接頭辞 | ライセンス | 備考 |
+| --- | --- | --- | --- | --- | --- |
+| [`Chottokun/ruri-v3-30m-lite`](https://huggingface.co/Chottokun/ruri-v3-30m-lite) | 256 | 日本語 | `"検索クエリ: "` / `"文章: "` | Apache-2.0 | **既定・最軽量** |
+| [`Chottokun/ruri-v3-70m-lite`](https://huggingface.co/Chottokun/ruri-v3-70m-lite) | 384 | 日本語 | `"検索クエリ: "` / `"文章: "` | Apache-2.0 | バランス型日本語埋め込み |
+| [`Chottokun/ruri-v3-130m-lite`](https://huggingface.co/Chottokun/ruri-v3-130m-lite) | 512 | 日本語 | `"検索クエリ: "` / `"文章: "` | Apache-2.0 | 中規模日本語埋め込み |
+| [`Chottokun/ruri-v3-310m-lite`](https://huggingface.co/Chottokun/ruri-v3-310m-lite) | 768 | 日本語 | `"検索クエリ: "` / `"文章: "` | Apache-2.0 | 高精度日本語埋め込み |
+| [`Chottokun/multilingual-e5-base-lite`](https://huggingface.co/Chottokun/multilingual-e5-base-lite) | 768 | 多言語 | `"query: "` / `"passage: "` | MIT | 100 以上の言語に対応 |
+| [`Chottokun/embeddinggemma-2-lite`](https://huggingface.co/Chottokun/embeddinggemma-2-lite) | 768 | 多言語 | `"task: search result \| query: "` / `"title: none \| text: "` | Apache-2.0 | Google EmbeddingGemma 2 テキスト塔 |
+
+> 補足: リランカーモデル（`Chottokun/ruri-v3-reranker-310m-lite`）は本埋め込み専用サーバーの対象外です。
+
 ## 動作環境・プラットフォーム制約
 
 - `sentencepiece_lite` の公開 wheel が `x86_64`（`manylinux_2_27_x86_64.manylinux_2_28_x86_64`）向けのみのため、ローカル実行および Docker イメージは **`linux/amd64` 専用** です（ARM64 環境では `--platform=linux/amd64` エミュレーションまたは対応 wheel が必要になります）。
@@ -75,7 +90,7 @@ docker run --rm -p 8080:8080 -v hf_cache:/data/huggingface embedding_jp_api_lite
 
 - `input_type="query"`: `query_prefix`（ruri-v3 では `"検索クエリ: "`）を付与
 - `input_type="document"` または `"passage"`: `passage_prefix`（ruri-v3 では `"文章: "`）を付与
-- `input_type="classification"` / `"clustering"`: `lite_config.json` の `classification_prefix`（未設定時は `"トピック: "`）を付与
+- `input_type="classification"` / `"clustering"`: `lite_config.json` の `classification_prefix` を付与（未設定時は `ruri-v3` 系なら `"トピック: "`、それ以外のモデルファミリーでは `""`）
 - `input_type="sts"`: `lite_config.json` の `sts_prefix`（未設定時は `""`）を付与
 - `input_type` 未指定かつ `apply_ruri_prefix=true`: 単一文字列なら `query_prefix`、配列なら `passage_prefix` を付与
 - `input_type` 未指定（既定）: `input` をそのまま埋め込む（既定で接頭辞を重複付与しない）
@@ -137,7 +152,14 @@ Docker の場合はボリュームにキャッシュを残した状態で `-e HF
 `LITE_MODEL` に別の lite モデル（HF repo ID または `model.onnx` / `.spm.fb` / `lite_config.json` / `lite_embed.py` を含むローカルディレクトリ）を指定して再起動します（1プロセス1モデル）。
 
 ```bash
+# より高精度な日本語 ruri-v3 モデル
 LITE_MODEL=Chottokun/ruri-v3-70m-lite uv run uvicorn app.main:app --host 0.0.0.0 --port 8080
+
+# 多言語 E5 base
+LITE_MODEL=Chottokun/multilingual-e5-base-lite uv run uvicorn app.main:app --host 0.0.0.0 --port 8080
+
+# EmbeddingGemma 2
+LITE_MODEL=Chottokun/embeddinggemma-2-lite uv run uvicorn app.main:app --host 0.0.0.0 --port 8080
 ```
 
 ## 開発・テスト
