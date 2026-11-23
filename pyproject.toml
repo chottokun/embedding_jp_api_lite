@@ -1,0 +1,31 @@
+[project]
+name = "embedding-jp-api-lite"
+version = "0.1.0"
+description = "OpenAI-compatible lightweight Japanese embedding API server powered by sentencepiece_lite and ONNX Runtime (Zero-Torch)"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn>=0.32.0",
+    "onnxruntime>=1.19.0",
+    "numpy>=1.26.0",
+    "huggingface-hub>=0.26.0",
+    "sentencepiece-lite @ https://github.com/chottokun/embedding-sentencepiece-lite/releases/download/v0.1.1/sentencepiece_lite-0.1.1-cp311-abi3-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+    "httpx>=0.27.0",
+    "openai>=1.50.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/app"]
