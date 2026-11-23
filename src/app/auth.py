@@ -1,7 +1,7 @@
 """Optional Bearer API key authentication."""
 
 import secrets
-from typing import Optional
+from typing import Annotated
 
 from fastapi import HTTPException, Security
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -12,8 +12,8 @@ security = HTTPBearer(auto_error=False)
 
 
 async def verify_api_key(
-    auth: Optional[HTTPAuthorizationCredentials] = Security(security),
-) -> Optional[HTTPAuthorizationCredentials]:
+    auth: Annotated[HTTPAuthorizationCredentials | None, Security(security)] = None,
+) -> HTTPAuthorizationCredentials | None:
     """Verify Bearer token when API_KEY is configured; allow all requests otherwise."""
     configured_key = get_api_key()
     if not configured_key:

@@ -4,12 +4,11 @@ from __future__ import annotations
 
 import importlib.metadata
 import os
-from pathlib import Path
 import socket
 import subprocess
 import sys
 import time
-from typing import List
+from pathlib import Path
 
 import httpx
 import numpy as np
@@ -18,6 +17,8 @@ from openai import OpenAI
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 HF_CACHE = PROJECT_ROOT / ".hf_cache"
 MODEL_ID = os.getenv("LITE_MODEL", "Chottokun/ruri-v3-30m-lite")
+MODEL_REVISION = os.getenv("LITE_MODEL_REVISION", "").strip() or None
+MIN_SENT_PER_SEC = float(os.getenv("VERIFY_MIN_SENT_PER_SEC", "15.0"))
 
 
 def _free_port() -> int:
@@ -33,10 +34,14 @@ def _cosine(a: np.ndarray, b: np.ndarray) -> float:
     return float(np.dot(a, b) / denom)
 
 
-def _start_server(port: int, offline: bool = False) -> subprocess.Popen:
+def _start_server(port: int, offline: bool = False) -> subprocess.Popen[str]:
     env = os.environ.copy()
     env["HF_HOME"] = str(HF_CACHE)
     env["LITE_MODEL"] = MODEL_ID
+    if MODEL_REVISION:
+        env["LITE_MODEL_REVISION"] = MODEL_REVISION
+    else:
+        env.pop("LITE_MODEL_REVISION", None)
     env["HOST"] = "127.0.0.1"
     env["PORT"] = str(port)
     if offline:
@@ -45,7 +50,16 @@ def _start_server(port: int, offline: bool = False) -> subprocess.Popen:
         env.pop("HF_HUB_OFFLINE", None)
 
     proc = subprocess.Popen(
-        [sys.executable, "-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", str(port)],
+        [
+            sys.executable,
+            "-m",
+            "uvicorn",
+            "app.main:app",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            str(port),
+        ],
         cwd=str(PROJECT_ROOT),
         env=env,
         stdout=subprocess.PIPE,
@@ -71,7 +85,7 @@ def _start_server(port: int, offline: bool = False) -> subprocess.Popen:
     raise TimeoutError(f"Server did not become ready on port {port} within 120s")
 
 
-def _stop_server(proc: subprocess.Popen) -> str:
+def _stop_server(proc: subprocess.Popen[str]) -> str:
     proc.terminate()
     try:
         out, _ = proc.communicate(timeout=10)
@@ -92,7 +106,7 @@ def main() -> None:
         # Gate 1: Equivalence with direct lite loader (JA/EN x query/document)
         from app.loader import LiteEmbeddingEngine
 
-        direct_engine = LiteEmbeddingEngine(model_id=MODEL_ID)
+        direct_engine = LiteEmbeddingEngine(model_id=MODEL_ID, revision=MODEL_REVISION)
         direct_embedder = direct_engine.embedder
 
         cases = [
@@ -139,7 +153,7 @@ def main() -> None:
         )
 
         # Gate 5: Speed benchmark (32 short sentences on CPU)
-        batch_32: List[str] = [
+        batch_32: list[str] = [
             f"これはCPU速度ベンチマーク用の短文テスト番号{i}です。" for i in range(32)
         ]
         # Warmup
@@ -164,9 +178,13 @@ def main() -> None:
 
         mean_sec = sum(elapsed_list) / len(elapsed_list)
         sent_per_sec = 32.0 / mean_sec
+        assert sent_per_sec >= MIN_SENT_PER_SEC, (
+            f"Batch-32 throughput {sent_per_sec:.1f} sentences/sec is below "
+            f"threshold {MIN_SENT_PER_SEC:.1f} sentences/sec"
+        )
         print(
             f"[Gate 5 PASS] Batch-32 CPU latency: mean={mean_sec * 1000:.1f} ms "
-            f"({sent_per_sec:.1f} sentences/sec over {runs} runs)"
+            f"({sent_per_sec:.1f} sentences/sec >= {MIN_SENT_PER_SEC:.1f} over {runs} runs)"
         )
     finally:
         online_logs = _stop_server(proc)

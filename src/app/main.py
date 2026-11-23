@@ -1,15 +1,16 @@
 """FastAPI application for embedding_jp_api_lite."""
 
-from contextlib import asynccontextmanager
+import logging
 import sys
-from typing import Optional
+from contextlib import asynccontextmanager
+from typing import Annotated
 
 import anyio
-from fastapi import Depends, FastAPI, HTTPException
 import uvicorn
+from fastapi import Depends, FastAPI, HTTPException, Request
 
 from app.auth import verify_api_key
-from app.config import get_host, get_lite_model, get_port
+from app.config import get_host, get_lite_model, get_lite_model_revision, get_port
 from app.loader import LiteEmbeddingEngine
 from app.schemas import (
     EmbeddingData,
@@ -22,34 +23,45 @@ from app.schemas import (
     Usage,
 )
 
-_engine: Optional[LiteEmbeddingEngine] = None
+logger = logging.getLogger("uvicorn.error")
 
 
-def get_engine() -> LiteEmbeddingEngine:
-    if _engine is None:
+def get_engine(request: Request) -> LiteEmbeddingEngine:
+    engine: LiteEmbeddingEngine | None = getattr(request.app.state, "engine", None)
+    if engine is None:
         raise HTTPException(status_code=503, detail="Model is not loaded yet.")
-    return _engine
+    return engine
 
 
 @asynccontextmanager
-async def lifespan(_app: FastAPI):
-    global _engine
+async def lifespan(app_instance: FastAPI):
     model_id = get_lite_model()
-    print(f"[embedding_jp_api_lite] Loading model: {model_id}")
-    _engine = LiteEmbeddingEngine(model_id=model_id)
+    revision = get_lite_model_revision()
+    logger.info(
+        "[embedding_jp_api_lite] Loading model: %s (revision=%s)",
+        model_id,
+        revision or "unpinned",
+    )
+    engine = LiteEmbeddingEngine(model_id=model_id, revision=revision)
+    app_instance.state.engine = engine
     torch_loaded = "torch" in sys.modules or "transformers" in sys.modules
-    print(
-        f"[embedding_jp_api_lite] Ready: model={_engine.model_id}, "
-        f"dim={_engine.embedding_dim}, torch_or_transformers_loaded={torch_loaded}"
+    logger.info(
+        "[embedding_jp_api_lite] Ready: model=%s, dim=%s, torch_or_transformers_loaded=%s",
+        engine.model_id,
+        engine.embedding_dim,
+        torch_loaded,
     )
     yield
-    _engine = None
+    app_instance.state.engine = None
 
 
 app = FastAPI(
     title="embedding_jp_api_lite",
     version="0.1.0",
-    description="OpenAI-compatible lightweight embedding server (sentencepiece_lite + ONNX Runtime, Zero-Torch).",
+    description=(
+        "OpenAI-compatible lightweight embedding server "
+        "(sentencepiece_lite + ONNX Runtime, Zero-Torch)."
+    ),
     lifespan=lifespan,
 )
 
@@ -57,7 +69,7 @@ app = FastAPI(
 @app.get("/", response_model=HealthResponse, tags=["Health"])
 @app.get("/health", response_model=HealthResponse, tags=["Health"])
 @app.get("/healthz", response_model=HealthResponse, tags=["Health"])
-async def health(engine: LiteEmbeddingEngine = Depends(get_engine)):
+async def health(engine: Annotated[LiteEmbeddingEngine, Depends(get_engine)]):
     """Health check returning loaded model ID and embedding dimension."""
     return HealthResponse(
         status="ok",
@@ -73,7 +85,7 @@ async def health(engine: LiteEmbeddingEngine = Depends(get_engine)):
     responses={401: {"model": ErrorResponse}},
     tags=["Models"],
 )
-async def list_models(engine: LiteEmbeddingEngine = Depends(get_engine)):
+async def list_models(engine: Annotated[LiteEmbeddingEngine, Depends(get_engine)]):
     """List the currently loaded model in OpenAI-compatible format."""
     return ModelList(
         data=[
@@ -91,6 +103,7 @@ async def list_models(engine: LiteEmbeddingEngine = Depends(get_engine)):
     response_model=EmbeddingResponse,
     dependencies=[Depends(verify_api_key)],
     responses={
+        400: {"model": ErrorResponse},
         401: {"model": ErrorResponse},
         503: {"model": ErrorResponse},
     },
@@ -98,11 +111,24 @@ async def list_models(engine: LiteEmbeddingEngine = Depends(get_engine)):
 )
 async def create_embeddings(
     request: EmbeddingRequest,
-    engine: LiteEmbeddingEngine = Depends(get_engine),
+    engine: Annotated[LiteEmbeddingEngine, Depends(get_engine)],
 ):
     """Create embeddings for input string or list of strings."""
-    is_single_str = isinstance(request.input, str)
-    raw_texts = [request.input] if is_single_str else list(request.input)
+    if request.dimensions is not None and request.dimensions > engine.embedding_dim:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Requested dimensions ({request.dimensions}) exceed model embedding "
+                f"dimension ({engine.embedding_dim})."
+            ),
+        )
+
+    if isinstance(request.input, str):
+        is_single_str = True
+        raw_texts = [request.input]
+    else:
+        is_single_str = False
+        raw_texts = list(request.input)
 
     prefix = engine.resolve_prefix(
         input_type=request.input_type,

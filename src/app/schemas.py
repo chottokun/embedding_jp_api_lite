@@ -1,50 +1,76 @@
 """Pydantic schemas for OpenAI-compatible embedding API."""
 
-from typing import Annotated, Literal, Optional, Union
-from pydantic import BaseModel, Field, StringConstraints
+from typing import Annotated, Literal
+
+from pydantic import BaseModel, Field, StringConstraints, field_validator
 
 from app.config import MAX_INPUT_ITEMS, MAX_INPUT_LENGTH
 
 LimitedString = Annotated[
-    str, StringConstraints(min_length=1, max_length=MAX_INPUT_LENGTH)
+    str,
+    StringConstraints(min_length=1, max_length=MAX_INPUT_LENGTH),
+]
+
+InputType = Literal[
+    "query",
+    "document",
+    "passage",
+    "classification",
+    "clustering",
+    "sts",
 ]
 
 
 class EmbeddingRequest(BaseModel):
-    input: Union[
-        LimitedString,
-        Annotated[list[LimitedString], Field(min_length=1, max_length=MAX_INPUT_ITEMS)],
-    ] = Field(description="Input text or list of texts to embed.")
-    model: str = Field(
-        default="Chottokun/ruri-v3-30m-lite",
-        description="Model identifier.",
+    input: (
+        LimitedString
+        | Annotated[list[LimitedString], Field(min_length=1, max_length=MAX_INPUT_ITEMS)]
+    ) = Field(description="Input text or list of texts to embed.")
+    model: str | None = Field(
+        default=None,
+        description="Model identifier (defaults to the currently loaded model).",
     )
     encoding_format: Literal["float", "base64"] = Field(
         default="float",
         description="Format to return embeddings in ('float' or 'base64').",
     )
-    dimensions: Optional[int] = Field(
+    dimensions: int | None = Field(
         default=None,
         ge=1,
-        description="Optional output embedding dimensions (Matryoshka truncation + L2 re-normalization).",
+        description=(
+            "Optional output embedding dimensions (Matryoshka truncation + L2 re-normalization)."
+        ),
     )
-    input_type: Optional[str] = Field(
+    input_type: InputType | None = Field(
         default=None,
-        description="Input task type: 'query', 'document', 'passage', 'classification', 'clustering', 'sts'.",
+        description=(
+            "Input task type: 'query', 'document', 'passage', "
+            "'classification', 'clustering', 'sts'."
+        ),
     )
     apply_ruri_prefix: bool = Field(
         default=False,
-        description="Automatically apply query/passage prefix based on input shape when input_type is omitted.",
+        description=(
+            "Automatically apply query/passage prefix based on input shape "
+            "when input_type is omitted."
+        ),
     )
-    user: Optional[str] = Field(
+    user: str | None = Field(
         default=None,
         description="Optional end-user identifier.",
     )
 
+    @field_validator("input_type", mode="before")
+    @classmethod
+    def _normalize_input_type(cls, value: object) -> object:
+        if isinstance(value, str):
+            return value.strip().lower()
+        return value
+
 
 class EmbeddingData(BaseModel):
     object: str = "embedding"
-    embedding: Union[list[float], str]
+    embedding: list[float] | str
     index: int
 
 

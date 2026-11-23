@@ -1,4 +1,4 @@
-"""Unit and integration tests for embedding_jp_api_lite."""
+"""Integration tests for embedding_jp_api_lite (requires cached or downloadable model)."""
 
 import base64
 import os
@@ -12,7 +12,9 @@ from fastapi.testclient import TestClient
 # Keep HF cache inside the project directory during tests
 os.environ.setdefault("HF_HOME", str(Path(__file__).resolve().parent.parent / ".hf_cache"))
 
-from app.main import app
+from app.main import app  # noqa: E402
+
+pytestmark = pytest.mark.integration
 
 
 @pytest.fixture(scope="module")
@@ -71,6 +73,14 @@ def test_embeddings_float_and_base64(client: TestClient):
     raw = base64.b64decode(b64_str)
     vec_b64 = list(struct.unpack("<256f", raw))
     assert np.allclose(vec_float, vec_b64, atol=1e-6)
+
+
+def test_embeddings_model_omitted(client: TestClient):
+    resp = client.post("/v1/embeddings", json={"input": "モデル名省略テスト"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["model"] == "Chottokun/ruri-v3-30m-lite"
+    assert len(body["data"][0]["embedding"]) == 256
 
 
 def test_embeddings_dimensions_matryoshka(client: TestClient):

@@ -1,16 +1,32 @@
-"""Lite model loader and inference wrapper (Zero-Torch)."""
+"""Lite model loader and inference wrapper (Zero-Torch).
+
+Security note / trust boundary:
+This module loads and executes the Python loader file (``lite_embed.py`` or
+``ruri_v3_lite.py``) shipped inside the target Hugging Face repository or local
+model directory via ``importlib.util.spec_from_file_location`` + ``exec_module``.
+Only configure trusted model repositories, and pin ``LITE_MODEL_REVISION`` to
+an immutable commit SHA in production environments.
+"""
 
 import base64
 import importlib.util
+import logging
 import os
 import threading
 import time
-from typing import Any, List, Optional, Union
+from typing import Any
 
 import numpy as np
-from huggingface_hub import hf_hub_download
+from huggingface_hub import hf_hub_download, snapshot_download
 
-from app.config import get_batch_size, get_lite_model, get_max_length
+from app.config import (
+    get_batch_size,
+    get_lite_model,
+    get_lite_model_revision,
+    get_max_length,
+)
+
+logger = logging.getLogger("uvicorn.error")
 
 LOADER_CANDIDATES = ("lite_embed.py", "ruri_v3_lite.py")
 
@@ -25,23 +41,35 @@ def _import_loader_module(loader_path: str) -> Any:
     return module
 
 
-def _resolve_loader_path(model_id: str) -> tuple[str, bool]:
-    """Resolve (loader_file_path, is_local_dir) from local directory or HF Hub."""
-    is_local = os.path.isdir(model_id)
-    if is_local:
-        for filename in LOADER_CANDIDATES:
-            candidate = os.path.join(model_id, filename)
-            if os.path.isfile(candidate):
-                return candidate, True
-        raise FileNotFoundError(
-            f"Neither lite_embed.py nor ruri_v3_lite.py found in {model_id}"
-        )
+def _find_loader_in_dir(model_dir: str) -> str:
+    for filename in LOADER_CANDIDATES:
+        candidate = os.path.join(model_dir, filename)
+        if os.path.isfile(candidate):
+            return candidate
+    raise FileNotFoundError(f"Neither lite_embed.py nor ruri_v3_lite.py found in {model_dir}")
 
-    last_err: Optional[Exception] = None
+
+def _resolve_loader_path(
+    model_id: str,
+    revision: str | None = None,
+) -> tuple[str, str | None]:
+    """Resolve (loader_file_path, local_model_dir) from a local directory or HF Hub."""
+    if os.path.isdir(model_id):
+        return _find_loader_in_dir(model_id), model_id
+
+    if revision:
+        snapshot_dir = snapshot_download(repo_id=model_id, revision=revision)
+        return _find_loader_in_dir(snapshot_dir), snapshot_dir
+
+    logger.warning(
+        "LITE_MODEL_REVISION is not set; remote loader code from %r is unpinned.",
+        model_id,
+    )
+    last_err: Exception | None = None
     for filename in LOADER_CANDIDATES:
         try:
             path = hf_hub_download(repo_id=model_id, filename=filename)
-            return path, False
+            return path, None
         except Exception as exc:
             last_err = exc
     raise FileNotFoundError(
@@ -52,14 +80,18 @@ def _resolve_loader_path(model_id: str) -> tuple[str, bool]:
 class LiteEmbeddingEngine:
     """Thread-safe single-model inference wrapper around LiteEmbedder / RuriV3Lite."""
 
-    def __init__(self, model_id: Optional[str] = None) -> None:
-        self.model_id = model_id or get_lite_model()
-        self.max_length = get_max_length()
-        self.batch_size = get_batch_size()
-        self.created_at = int(time.time())
-        self._lock = threading.Lock()
+    def __init__(
+        self,
+        model_id: str | None = None,
+        revision: str | None = None,
+    ) -> None:
+        resolved_model_id = model_id or get_lite_model()
+        resolved_revision = revision if revision is not None else get_lite_model_revision()
 
-        loader_path, is_local = _resolve_loader_path(self.model_id)
+        loader_path, local_model_dir = _resolve_loader_path(
+            resolved_model_id,
+            revision=resolved_revision,
+        )
         loader_mod = _import_loader_module(loader_path)
 
         embedder_cls = getattr(loader_mod, "LiteEmbedder", None) or getattr(
@@ -70,23 +102,61 @@ class LiteEmbeddingEngine:
                 f"Loader at {loader_path} does not export LiteEmbedder or RuriV3Lite"
             )
 
-        if is_local:
-            self.embedder = embedder_cls(model_dir=self.model_id)
+        if local_model_dir is not None:
+            embedder = embedder_cls(repo_id=resolved_model_id, model_dir=local_model_dir)
         else:
-            self.embedder = embedder_cls(repo_id=self.model_id)
+            embedder = embedder_cls(repo_id=resolved_model_id)
 
-        self.embedding_dim: int = int(self.embedder.embedding_dim)
-        self.config: dict = dict(getattr(self.embedder, "config", {}))
+        self._init_common(
+            model_id=resolved_model_id,
+            embedder=embedder,
+            max_length=get_max_length(),
+            batch_size=get_batch_size(),
+        )
+
+    def _init_common(
+        self,
+        model_id: str,
+        embedder: Any,
+        max_length: int,
+        batch_size: int,
+    ) -> None:
+        self.model_id = model_id
+        self.embedder = embedder
+        self.max_length = max_length
+        self.batch_size = batch_size
+        self.created_at = int(time.time())
+        self._lock = threading.Lock()
+        self.embedding_dim = int(self.embedder.embedding_dim)
+        self.config: dict[str, Any] = dict(getattr(self.embedder, "config", {}))
+
+    @classmethod
+    def from_embedder(
+        cls,
+        model_id: str,
+        embedder: Any,
+        max_length: int = 512,
+        batch_size: int = 64,
+    ) -> "LiteEmbeddingEngine":
+        """Construct an engine around a pre-built embedder (for unit tests)."""
+        instance = cls.__new__(cls)
+        instance._init_common(
+            model_id=model_id,
+            embedder=embedder,
+            max_length=max_length,
+            batch_size=batch_size,
+        )
+        return instance
 
     def resolve_prefix(
         self,
-        input_type: Optional[str],
+        input_type: str | None,
         apply_ruri_prefix: bool,
         is_single_str: bool,
     ) -> str:
         """Determine prefix string from lite_config.json and request parameters."""
-        query_prefix = self.config.get("query_prefix", "")
-        passage_prefix = self.config.get("passage_prefix", "")
+        query_prefix = str(self.config.get("query_prefix", ""))
+        passage_prefix = str(self.config.get("passage_prefix", ""))
 
         if input_type is not None:
             key = input_type.lower()
@@ -95,9 +165,9 @@ class LiteEmbeddingEngine:
             if key in ("document", "passage"):
                 return passage_prefix
             if key in ("classification", "clustering"):
-                return "トピック: "
+                return str(self.config.get("classification_prefix", "トピック: "))
             if key == "sts":
-                return ""
+                return str(self.config.get("sts_prefix", ""))
             return ""
 
         if apply_ruri_prefix:
@@ -106,13 +176,13 @@ class LiteEmbeddingEngine:
         return ""
 
     @staticmethod
-    def apply_prefix(texts: List[str], prefix: str) -> List[str]:
+    def apply_prefix(texts: list[str], prefix: str) -> list[str]:
         """Prepend prefix unless the text already starts with it."""
         if not prefix:
             return texts
         return [t if t.startswith(prefix) else f"{prefix}{t}" for t in texts]
 
-    def count_tokens(self, texts: List[str]) -> int:
+    def count_tokens(self, texts: list[str]) -> int:
         """Count total tokens (including BOS/EOS reserve, clipped to max_length)."""
         add_bos = bool(getattr(self.embedder, "add_bos", False))
         add_eos = bool(getattr(self.embedder, "add_eos", False))
@@ -128,11 +198,15 @@ class LiteEmbeddingEngine:
 
     def encode_and_format(
         self,
-        texts: List[str],
-        dimensions: Optional[int] = None,
+        texts: list[str],
+        dimensions: int | None = None,
         encoding_format: str = "float",
-    ) -> tuple[List[Union[list[float], str]], int]:
+    ) -> tuple[list[list[float] | str], int]:
         """Run serialized inference via the lite loader and format embeddings."""
+        # Keep count_tokens inside the lock: FastSBPTokenizer thread-safety is not
+        # guaranteed. Tokenization happens twice (here and inside embedder.encode)
+        # because the external lite loader owns encoding, and tokenization cost is
+        # small compared to ONNX inference.
         with self._lock:
             token_count = self.count_tokens(texts)
             vectors: np.ndarray = self.embedder.encode(
@@ -155,7 +229,7 @@ class LiteEmbeddingEngine:
 
         if encoding_format == "base64":
             arr_f32 = arr.astype("<f4", copy=False)
-            formatted: List[Union[list[float], str]] = [
+            formatted: list[list[float] | str] = [
                 base64.b64encode(row.tobytes()).decode("utf-8") for row in arr_f32
             ]
         else:
